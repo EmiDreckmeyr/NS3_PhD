@@ -1,4 +1,11 @@
-//Utilities
+
+//==========================================================================================================
+// LoRaWAN Network Simulation with coordinates and Pathloss from MatLab Brdige Scenario and ADR
+// Simulates end devices with automatic spreading factor assignment (ADR)
+// Features: Packet tracking, energy consumption, NetAnim visualization
+//==========================================================================================================
+
+// Utilities
 #include "ns3/command-line.h"
 #include "ns3/log.h"
 #include "ns3/application.h"
@@ -14,16 +21,19 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
-//Losses
+
+// Propagation and Channel Models
 #include "ns3/okumura-hata-propagation-loss-model.h"
 #include "ns3/propagation-module.h"
-//Device mobility and position
+
+// Mobility and Positioning
 #include "ns3/constant-position-mobility-model.h"
 #include "ns3/mobility-helper.h"
 #include "ns3/netanim-module.h"
 #include "ns3/animation-interface.h"
 #include "ns3/position-allocator.h"
-//LoRa End Devices and Gateways
+
+// LoRaWAN Devices and Components
 #include "ns3/end-device-lora-phy.h"
 #include "ns3/end-device-lorawan-mac.h"
 #include "ns3/gateway-lora-phy.h"
@@ -35,162 +45,141 @@
 #include "ns3/lorawan-mac-header.h"
 #include "ns3/lora-phy.h"
 #include "ns3/lora-tag.h"
-//Energy Models
+
+// Energy Models
 #include "ns3/basic-energy-source.h"
 #include "ns3/lora-radio-energy-model.h"
 #include "ns3/lora-radio-energy-model-helper.h"
 #include "ns3/basic-energy-source-helper.h"
-//Periodic Sender
+
+// Network Applications and Helpers
 #include "ns3/node-container.h"
 #include "ns3/periodic-sender-helper.h"
 #include "ns3/packet.h"
 #include "ns3/random-variable-stream.h"
-// Network Server and Forwarder
 #include "ns3/internet-stack-helper.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/ipv4-address-helper.h"
 #include "ns3/forwarder-helper.h"
 #include "ns3/network-server-helper.h"
-//Namespaces
+
+// Namespaces
 using namespace ns3;
 using namespace lorawan;
 
-NS_LOG_COMPONENT_DEFINE("CT_dev");
+NS_LOG_COMPONENT_DEFINE("RSSIBridge");
 
-/**********************
- * Global simulation parameters
- **********************/
-static const uint32_t SIM_END_HOURS = 24;          
-static const uint32_t N_END_DEVICES = 30;          
-static const uint32_t N_GATEWAYS = 1;                    
-static const Time PERIOD_SENDER = Minutes(15);    
+/**
+ * ============================================================================
+ * SIMULATION PARAMETERS
+ * ============================================================================
+ */
+static const uint32_t SIM_END_HOURS = 24;           // Simulation duration (hours)
+static const Time PERIOD_SENDER = Minutes(15);      // Packet transmission period
 static std::ofstream logFile;
-std::vector<std::vector<double>> distancesToGateways(N_GATEWAYS);
+static uint32_t N_END_DEVICES = 0;   // set from CSV at runtime
+static uint32_t N_GATEWAYS = 0;      // set from CSV at runtime
+std::vector<Vector> g_endDevicePositions;
+std::vector<Vector> g_gatewayPositions;
+Vector g_nsPosition;
 
-// ENU coordinates and SF data (from your provided CSV)
-static const std::vector<std::vector<double>> ENU_DATA = {
-    {-56.24658592386878, 63.52936808945109, -7.862333333333368},  // node 0
-    {-52.36713943808061, 59.192765950849434, -7.552333333333365}, // node 1
-    {-48.487692952292456, 54.74496888516356, -6.752333333333354}, // node 2
-    {-44.60824646650429, 50.40836674585458, -7.052333333333365},  // node 3
-    {-40.72879998070006, 45.9605696801687, -5.852333333333348},   // node 4
-    {-36.849353494911895, 41.62396754085973, -5.15233333333336},  // node 5
-    {-32.969907009107665, 37.176170475173855, -4.952333333333371},// node 6
-    {-29.09046052333557, 32.839568335864875, -3.6523333333333596},// node 7
-    {-25.211014037531335, 28.391771270179, -4.052333333333365},   // node 8
-    {-21.331567551743174, 24.055169130870024, -2.5523333333333653},// node 9
-    {-17.452121065938943, 19.607372064476824, -2.1523333333333596},// node 10
-    {-13.572674580166847, 15.270769925875172, -1.752333333333354},// node 11
-    {-9.693228094378684, 10.822972859481972, -0.35233333333334826},// node 12
-    {-5.813781608574453, 6.486370721587642, -0.8523333333333483},// node 13
-    {-1.9343351227862895, 2.0385736551944422, 1.047666666666629},// node 14
-    {1.9451113630179404, -2.2980284841145338, 0.547666666666629}, // node 15
-    {5.824557848790038, -6.7458255498004105, 2.1476666666666517},// node 16
-    {9.704004334594268, -11.082427689109387, 1.6476666666666517},// node 17
-    {13.583450820382431, -15.530224754795263, 3.4476666666666347},// node 18
-    {17.46289730618666, -19.86682689410424, 2.747666666666646}, // node 19
-    {21.342343791974827, -24.314623959790115, 3.9476666666666347},// node 20
-    {25.221790277746923, -28.65122609909909, 3.6476666666666517},// node 21
-    {29.10123676355115, -33.09902316478497, 5.047666666666629}, // node 22
-    {32.980683249339315, -37.435625304093946, 4.447666666666635},// node 23
-    {36.860129735143545, -41.8834223690725, 6.34766666666664},  // node 24
-    {40.739576220915644, -46.22002450838147, 5.747666666666646}, // node 25
-    {44.619022706719875, -50.667821574067354, 6.947666666666635},// node 26
-    {48.49846919250804, -55.004423713376326, 6.447666666666635},// node 27
-    {52.37791567831226, -59.4522207790622, 3.1876666666666438}, // node 28
-    {56.095718560529264, -59.89700048598445, 3.1876666666666438}  // node 29
-};
-
-// Define gateway coordinates here:
-static std::vector<Vector> GATEWAY_POSITIONS = {
-    Vector(-600.0,  -100.0, -20.0),   // Gateway 0
-};
-// Define network server coordinates here:
-static std::vector<Vector> NS_POSITION = {
-    Vector(-620.0,  -120.0, -30.0),   // NS 0
-};
-
-// Global variable to toggle confirmed/unconfirmed messages
-static const bool USE_CONFIRMED_UPLINK = true;    
+// Configuration flags
+static const bool USE_CONFIRMED_UPLINK = true;
 static const bool ENABLE_12TH_HOUR_POLLING = false; 
 
-/**********************
- * Global variables
- **********************/
-static std::vector<uint32_t> g_ackCount;
-static std::unordered_set<uint32_t> receivedPacketIds;
-static double totalToA_RX1 = 0.0;
-static double totalToA_RX2 = 0.0;
-static std::vector<double> hourlyToA_RX1;
-static std::vector<double> hourlyToA_RX2;
-static double totalEndDeviceToA = 0.0;
-static std::vector<double> hourlyEndDeviceToA;
-static uint32_t furthestDeviceIndex = 0;
-
-//Packet Tracking
-std::vector<int> packetsSent(6, 0);
-std::vector<int> packetsReceived(6, 0);
+/**
+ * ============================================================================
+ * GLOBAL STATE VARIABLES
+ * ============================================================================
+ */
+std::vector<std::vector<double>> distancesToGateways; // resized in main() after CSV load
+std::vector<uint32_t> g_ackCount;
+std::unordered_set<uint32_t> receivedPacketIds;
+std::vector<int> packetsSent(6, 0);           // SF7-SF12
+std::vector<int> packetsReceived(6, 0);       // SF7-SF12
 std::map<uint32_t, uint32_t> packetSenderMap;
 std::vector<int> packetsReceivedPerNode;
-std::vector<uint8_t> spreadingFactors; // Will store actual assigned SFs
+std::vector<uint32_t> g_retransmissionsPerNode; 
+std::vector<uint8_t> spreadingFactors;        // Actual assigned SFs
+uint32_t furthestDeviceIndex = 0;
+std::vector<uint32_t> g_energyEventCount; 
 
-// Function to write SF assignments to CSV
-void WriteSfAssignmentsToCsv() {
-    std::ofstream sfFile("node_sf_assignments.csv");
-    sfFile << "node_id,x_enu_m,y_enu_m,z_enu_m,assigned_sf\n";
-    for (uint32_t i = 0; i < std::min(spreadingFactors.size(), ENU_DATA.size()); ++i) {
-        sfFile << i << "," 
-               << ENU_DATA[i][0] << "," 
-               << ENU_DATA[i][1] << "," 
-               << ENU_DATA[i][2] << "," 
-               << unsigned(spreadingFactors[i]) << "\n";
+/**
+ * ============================================================================
+ * UTILITY FUNCTIONS
+ * ============================================================================
+ */
+/**
+ * Read locations from csv
+ */
+struct BridgeNodeRecord {
+    uint32_t nodeId;
+    std::string type;
+    uint32_t typeId;
+    double x, y, z;
+    double txPowerDbm;
+    double frequencyMHz;
+    uint8_t sf;
+    double bwKHz;
+    double antennaGainDbi;
+    double rxSensitivityDbm;
+    double distanceM;
+    double concreteMembersCrossed;
+    double steelMembersCrossed;
+    double rssiPredictedDbm;   
+};
+
+std::vector<BridgeNodeRecord> LoadNodeRecordsFromCsv(const std::string &path) {
+    std::vector<BridgeNodeRecord> records;
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        NS_FATAL_ERROR("Cannot open node position CSV: " << path);
     }
-    sfFile.close();
-    NS_LOG_INFO("SF assignments written to node_sf_assignments.csv");
+    std::string line;
+    std::getline(file, line); // skip header row
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss(line);
+        std::string field;
+        BridgeNodeRecord rec;
+        std::getline(ss, field, ','); rec.nodeId          = std::stoul(field);
+        std::getline(ss, field, ','); rec.type             = field;
+        std::getline(ss, field, ','); rec.typeId           = std::stoul(field);
+        std::getline(ss, field, ','); rec.x                = std::stod(field);
+        std::getline(ss, field, ','); rec.y                = std::stod(field);
+        std::getline(ss, field, ','); rec.z                = std::stod(field);
+        std::getline(ss, field, ','); rec.txPowerDbm       = std::stod(field);
+        std::getline(ss, field, ','); rec.frequencyMHz     = std::stod(field);
+        std::getline(ss, field, ','); rec.sf               = static_cast<uint8_t>(std::stoul(field));
+        std::getline(ss, field, ','); rec.bwKHz            = std::stod(field);
+        std::getline(ss, field, ','); rec.antennaGainDbi   = std::stod(field);
+        std::getline(ss, field, ','); rec.rxSensitivityDbm = std::stod(field);
+        std::getline(ss, field, ','); rec.distanceM              = std::stod(field);
+        std::getline(ss, field, ','); rec.concreteMembersCrossed = std::stod(field);
+        std::getline(ss, field, ','); rec.steelMembersCrossed    = std::stod(field);
+        std::getline(ss, field, ','); rec.rssiPredictedDbm       = std::stod(field); // "NaN" parses fine via strtod
+        // Remaining columns (LinkMargin_dB, SF_ADR, TxPower_ADR_dBm,
+        // LinkMargin_ADR_dB, MarginInsufficient) are intentionally NOT read —
+        // ns-3's own ADR keeps assigning SF/TxPower,.
+        records.push_back(rec);
+    }
+    NS_LOG_INFO("Loaded " << records.size() << " node records from " << path);
+    return records;
 }
 
-/**********************
- * Utility Functions
- **********************/
-
-double CalculateTimeOnAir(uint32_t payloadSize, uint8_t sf, double bandwidthHz = 125000.0, uint8_t codingRate = 1, bool crcEnabled = true, bool headerEnabled = true, uint8_t nPreamble = 8) {
-    if (sf < 7 || sf > 12) {
-        NS_LOG_ERROR("Invalid SF " << unsigned(sf) << " in CalculateTimeOnAir, using default SF7");
-        sf = 7;
-    }
-    if (bandwidthHz <= 0) {
-        NS_LOG_ERROR("Invalid bandwidth " << bandwidthHz << "Hz, using default 125000Hz");
-        bandwidthHz = 125000.0;
-    }
-    double Ts = (1 << sf) / bandwidthHz;
-    double Tpreamble = (nPreamble + 4.25) * Ts;
-    int DE = (sf >= 11) ? 1 : 0;
-    int H = headerEnabled ? 0 : 1;
-    int CR = codingRate;
-    double payloadSymbNb = 8 + std::max(std::ceil((8.0 * payloadSize - 4.0 * sf + 28 + 16 * crcEnabled - 20 * H) / (4.0 * (sf - 2 * DE))) * (CR + 4), 0.0);
-    double Tpayload = payloadSymbNb * Ts;
-    double toa = Tpreamble + Tpayload;
-    if (!std::isfinite(toa) || toa < 0) {
-        NS_LOG_ERROR("Calculated ToA is invalid (" << toa << "s) for SF" << unsigned(sf) << ", payloadSize=" << payloadSize);
-        return 0.0;
-    }
-    NS_LOG_DEBUG("Calculated ToA: " << toa << "s for SF" << unsigned(sf) << ", payloadSize=" << payloadSize);
-    return toa;
+uint8_t DataRateToSf(uint8_t dr) {
+    return (dr <= 5) ? (12 - dr) : 7;
 }
-
-void FindFurthestDevice(NodeContainer endDevices, NodeContainer gateways) {
+/**
+ * Find end device furthest from any gateway (minimum distance metric)
+ */
+void FindFurthestDevice(uint32_t nEndDevices, uint32_t nGateways) {
     furthestDeviceIndex = 0;
     double maxMinDistance = 0.0;
-    for (uint32_t i = 0; i < endDevices.GetN(); ++i) {
-        Ptr<Node> device = endDevices.Get(i);
-        Ptr<MobilityModel> deviceMobility = device->GetObject<MobilityModel>();
-        Vector devPos = deviceMobility->GetPosition();
+    for (uint32_t i = 0; i < nEndDevices; ++i) {
         double minDistToAnyGw = std::numeric_limits<double>::max();
-        for (uint32_t g = 0; g < gateways.GetN(); ++g) {
-            Ptr<MobilityModel> gwMob = gateways.Get(g)->GetObject<MobilityModel>();
-            Vector gwPos = gwMob->GetPosition();
-            double dist = ns3::CalculateDistance(devPos, gwPos);  // ✅ FIXED
-            if (dist < minDistToAnyGw) minDistToAnyGw = dist;
+        for (uint32_t g = 0; g < nGateways; ++g) {
+            if (distancesToGateways[g][i] < minDistToAnyGw) minDistToAnyGw = distancesToGateways[g][i];
         }
         if (minDistToAnyGw > maxMinDistance) {
             maxMinDistance = minDistToAnyGw;
@@ -199,28 +188,30 @@ void FindFurthestDevice(NodeContainer endDevices, NodeContainer gateways) {
     }
     NS_LOG_INFO("Furthest end device (max min-distance) is index " << furthestDeviceIndex << " at " << maxMinDistance << "m");
 }
-void WriteSfAssignmentsToCsv(const std::vector<std::vector<double>>& enuData) {
+
+/**
+ * Write SF assignments and distances to CSV file
+ */
+void WriteSfAssignmentsToCsv(const std::vector<Vector>& positions) {
     std::ofstream sfFile("node_sf_assignments.csv");
-    sfFile << "node_id,x_enu_m,y_enu_m,z_enu_m,assigned_sf,distance_to_gateway_m\n";
+    sfFile << "node_id,x_m,y_m,z_m,assigned_sf,distance_to_gateway_m\n";
     for (uint32_t i = 0; i < std::min(spreadingFactors.size(), static_cast<size_t>(N_END_DEVICES)); ++i) {
-        double dist = distancesToGateways[0][i];  // Distance to first gateway
-        sfFile << i << "," 
-               << enuData[i][0] << "," 
-               << enuData[i][1] << "," 
-               << enuData[i][2] << "," 
-               << unsigned(spreadingFactors[i]) << "," 
+        double dist = distancesToGateways[0][i];
+        sfFile << i << "," << positions[i].x << "," << positions[i].y << ","
+               << positions[i].z << "," << unsigned(spreadingFactors[i]) << ","
                << std::fixed << std::setprecision(2) << dist << "\n";
     }
     sfFile.close();
-    NS_LOG_INFO("SF assignments written to node_sf_assignments.csv");
+    NS_LOG_INFO("SF assignments saved to node_sf_assignments.csv");
 }
-
-
-
-/**********************
- * Ack tracing callback
- **********************/
-void LogToFile(std::ofstream &f, const std::string &msg);
+/**
+ * ============================================================================
+ * PACKET TRACING CALLBACKS
+ * ============================================================================
+ */
+void LogToFile(std::ofstream &f, const std::string &msg) {
+    f << std::fixed << std::setprecision(3) << Simulator::Now().GetSeconds() << "s: " << msg << "\n";
+}
 
 void OnGatewayAck(uint32_t gwIndex, Ptr<const Packet> p) {
     g_ackCount[gwIndex]++;
@@ -229,9 +220,6 @@ void OnGatewayAck(uint32_t gwIndex, Ptr<const Packet> p) {
     LogToFile(logFile, msg.str());
 }
 
-/**********************
- * Gateway PHY StartSending tracer
- **********************/
 void OnGatewayPhyStartSending(uint32_t gwIndex, Ptr<const Packet> packet, uint32_t phyIndex) {
     Ptr<Packet> copy = packet->Copy();
     LorawanMacHeader macHdr;
@@ -248,34 +236,21 @@ void OnGatewayPhyStartSending(uint32_t gwIndex, Ptr<const Packet> packet, uint32
         }
     }
     LoraTag tag;
-    double frequency = 0.0;
     uint8_t sf;
     if (packet->PeekPacketTag(tag)) {
         sf = tag.GetSpreadingFactor();
-        frequency = tag.GetFrequency();
         if (sf < 7 || sf > 12) {
             sf = 7;
             tag.SetSpreadingFactor(sf);
-            Ptr<Packet> packetCopy = packet->Copy();
-            packetCopy->ReplacePacketTag(tag);
         }
     } else {
         NS_LOG_ERROR("No LoraTag found for gateway " << gwIndex << ", forcing SF7");
         sf = 7;
         tag.SetSpreadingFactor(sf);
-        Ptr<Packet> packetCopy = packet->Copy();
-        packetCopy->AddPacketTag(tag);
     }
-    uint32_t size = packet->GetSize();
-    double toa = CalculateTimeOnAir(size, sf, 125000.0, 1, true, true, 8);
-    if (frequency == 869525000.0) {
-        totalToA_RX2 += toa;
-    } else {
-        totalToA_RX1 += toa;
-    }
-}
 
-void OnEndDevicePhyStartSending(uint32_t deviceIndex, Ptr<const Packet> packet, uint8_t dr) {
+}
+void LogFurthestDevicePhyStartSending(uint32_t deviceIndex, Ptr<const Packet> packet, uint32_t phyIndex) {
     if (deviceIndex != furthestDeviceIndex) {
         return;
     }
@@ -289,69 +264,22 @@ void OnEndDevicePhyStartSending(uint32_t deviceIndex, Ptr<const Packet> packet, 
         }
     } else {
         NS_LOG_ERROR("No LoraTag found for end device " << deviceIndex << " packet, using default SF7");
-        sf = (dr <= 5) ? (12 - dr) : 7;
     }
-    uint32_t size = packet->GetSize();
-    double toa = CalculateTimeOnAir(size, sf, 125000.0, 1, true, true, 8);
-    totalEndDeviceToA += toa;
 }
 
 void OnEndDeviceSentNewPacket(uint32_t deviceIndex, Ptr<EndDeviceLorawanMac> mac, Ptr<const Packet> packet) {
-    uint8_t dr = mac->GetDataRate();
     LoraTag tag;
     if (!packet->PeekPacketTag(tag)) {
         NS_LOG_ERROR("No LoraTag found in SentNewPacket for end device " << deviceIndex);
     }
-    if (deviceIndex == furthestDeviceIndex) {
-        OnEndDevicePhyStartSending(deviceIndex, packet, dr);
-    }
 }
+ 
 
-/**********************
- * Duty Cycle Check
- **********************/
-void CheckGatewayDutyCycle() {
-    double maxToA_RX1 = 36.0;
-    double maxToA_RX2 = 360.0;
-    hourlyToA_RX1.push_back(totalToA_RX1);
-    hourlyToA_RX2.push_back(totalToA_RX2);
-    NS_LOG_INFO("DutyCycleChecker: Gateway RX1 time on air in hour " << hourlyToA_RX1.size() << ": " << totalToA_RX1 << " seconds");
-    if (totalToA_RX1 <= maxToA_RX1) {
-        NS_LOG_INFO("DutyCycleChecker: Gateway RX1 compliant with ETSI 1% duty cycle.");
-    } else {
-        NS_LOG_INFO("DutyCycleChecker: Gateway RX1 non-compliant with ETSI 1% duty cycle (exceeds 36s).");
-    }
-    NS_LOG_INFO("DutyCycleChecker: Gateway RX2 time on air in hour " << hourlyToA_RX2.size() << ": " << totalToA_RX2 << " seconds");
-    if (totalToA_RX2 <= maxToA_RX2) {
-        NS_LOG_INFO("DutyCycleChecker: Gateway RX2 compliant with ETSI 10% duty cycle.");
-    } else {
-        NS_LOG_INFO("DutyCycleChecker: Gateway RX2 non-compliant with ETSI 10% duty cycle (exceeds 360s).");
-    }
-    totalToA_RX1 = 0.0;
-    totalToA_RX2 = 0.0;
-    if (Simulator::Now() < Hours(SIM_END_HOURS) - Seconds(1)) {
-        Simulator::Schedule(Hours(1), &CheckGatewayDutyCycle);
-    }
-}
-
-void CheckEndDeviceDutyCycle() {
-    double maxToA = 36.0;
-    hourlyEndDeviceToA.push_back(totalEndDeviceToA);
-    NS_LOG_INFO("DutyCycleChecker: Furthest end device total time on air in hour " << hourlyEndDeviceToA.size() << ": " << totalEndDeviceToA << " seconds");
-    if (totalEndDeviceToA <= maxToA) {
-        NS_LOG_INFO("DutyCycleChecker: Furthest end device compliant with ETSI 1% duty cycle.");
-    } else {
-        NS_LOG_INFO("DutyCycleChecker: Furthest end device non-compliant with ETSI 1% duty cycle (exceeds 36s).");
-    }
-    totalEndDeviceToA = 0.0;
-    if (Simulator::Now().GetSeconds() < SIM_END_HOURS * 3600.0) {
-        Simulator::Schedule(Seconds(3600.0), &CheckEndDeviceDutyCycle);
-    }
-}
-
-/***************
- * UniquePacketIdTag Definition
- ***************/
+/**
+ * ============================================================================
+ * CUSTOM PACKET TAGGING
+ * ============================================================================
+ */
 class UniquePacketIdTag : public Tag {
 public:
     UniquePacketIdTag() : m_id(0) {}
@@ -373,9 +301,79 @@ private:
     uint32_t m_id;
 };
 
-/***************
- * Custom PeriodicSender application
- ***************/
+/**
+ * ============================================================================
+ * MATLAB-DERIVED PATH LOSS LOOKUP MODEL
+ * ============================================================================
+ * Replaces LogDistancePropagationLossModel's analytical computation with a
+ * fixed per-sensor path loss value recovered from MATLAB's
+ * RSSI_predicted_dBm (material-crossing + ray-traced multipath model).
+ * Chained with the existing Nakagami fading model exactly as before, so
+ * fading is still applied once, stochastically, at simulation time.
+ */
+class MatlabLookupPropagationLossModel : public PropagationLossModel {
+public:
+    static TypeId GetTypeId(void) {
+        static TypeId tid = TypeId("MatlabLookupPropagationLossModel")
+            .SetParent<PropagationLossModel>()
+            .AddConstructor<MatlabLookupPropagationLossModel>();
+        return tid;
+    }
+
+    // positions/pathLossDb must be the same length and index-aligned:
+    // pathLossDb[i] is the gain-free path loss (dB) for the sensor at
+    // positions[i], recovered from RSSI_predicted_dBm at CSV-load time.
+    void LoadPathLossMap(const std::vector<Vector>& positions,
+                         const std::vector<double>& pathLossDb) {
+        NS_ASSERT_MSG(positions.size() == pathLossDb.size(),
+                      "Position and path-loss vectors must be the same length");
+        m_positions = positions;
+        m_pathLossDb = pathLossDb;
+        NS_LOG_INFO("MatlabLookupPropagationLossModel: loaded " << positions.size() << " sensor path-loss entries");
+    }
+
+private:
+    virtual double DoCalcRxPower(double txPowerDbm,
+                                  Ptr<MobilityModel> a,
+                                  Ptr<MobilityModel> b) const override {
+        double pathLossDb = 0.0;
+        if (!LookupPathLoss(a->GetPosition(), pathLossDb) &&
+            !LookupPathLoss(b->GetPosition(), pathLossDb)) {
+            NS_LOG_WARN("MatlabLookupPropagationLossModel: no matching sensor position found "
+                        "for this link -- falling back to a very high loss (link treated as unusable). "
+                        "Check that ns-3 node positions exactly match the CSV.");
+            pathLossDb = 200.0; // effectively unreachable, fails loudly rather than silently
+        }
+        return txPowerDbm - pathLossDb;
+    }
+
+    bool LookupPathLoss(const Vector& pos, double &pathLossDbOut) const {
+        const double eps = 1e-3; // metres; generous enough for float round-trip, tight enough to avoid collisions
+        for (size_t i = 0; i < m_positions.size(); ++i) {
+            if (std::abs(m_positions[i].x - pos.x) < eps &&
+                std::abs(m_positions[i].y - pos.y) < eps &&
+                std::abs(m_positions[i].z - pos.z) < eps) {
+                pathLossDbOut = m_pathLossDb[i];
+                return true;
+            }
+        }
+        return false;
+    }
+
+    virtual int64_t DoAssignStreams(int64_t stream) override {
+        return 0; // deterministic lookup, no RNG to seed
+    }
+
+    std::vector<Vector> m_positions;
+    std::vector<double> m_pathLossDb;
+};
+
+
+/**
+ * ============================================================================
+ * CUSTOM PERIODIC SENDER APPLICATION
+ * ============================================================================
+ */
 static uint32_t globalPacketId = 0;
 
 class TaggingPeriodicSender : public Application {
@@ -430,7 +428,7 @@ private:
             return;
         }
         uint8_t dr = mac->GetDataRate();
-        uint8_t sf = (dr <= 5) ? (12 - dr) : 7;
+        uint8_t sf = DataRateToSf(dr);
         LoraTag tag;
         tag.SetSpreadingFactor(sf);
         packet->AddPacketTag(tag);
@@ -447,9 +445,11 @@ private:
     uint32_t m_packetsSent;
 };
 
+
 /***************
  * Callbacks for tracing packets at PHY layer
  ***************/
+
 void OnTransmissionCallback(uint32_t deviceIndex, Ptr<const Packet> packet, uint32_t phyIndex) {
     LoraTag tag;
     if (packet->PeekPacketTag(tag)) {
@@ -463,6 +463,7 @@ void OnTransmissionCallback(uint32_t deviceIndex, Ptr<const Packet> packet, uint
         packetSenderMap[idTag.GetId()] = deviceIndex;
     }
 }
+
 
 void OnPacketReceptionCallback(Ptr<const Packet> packet, uint32_t phyIndex) {
     UniquePacketIdTag idTag;
@@ -495,72 +496,235 @@ void OnPacketReceptionCallback(Ptr<const Packet> packet, uint32_t phyIndex) {
     }
 }
 
-void OnMacPacketOutcome(uint8_t transmissions, bool successful, Time firstAttempt, Ptr<Packet> packet) {
+void OnMacPacketOutcome(uint32_t deviceIndex, uint8_t transmissions, bool successful, Time firstAttempt, Ptr<Packet> packet) {
+    uint8_t retransmissions = (transmissions > 0) ? (transmissions - 1) : 0;
+    if (deviceIndex < g_retransmissionsPerNode.size()) {
+        g_retransmissionsPerNode[deviceIndex] += retransmissions;
+    }
+    std::stringstream msg;
+    msg << "Node " << deviceIndex << " packet outcome: " << unsigned(transmissions)
+        << " transmission(s), " << unsigned(retransmissions) << " retransmission(s), "
+        << (successful ? "SUCCESS" : "FAILED");
+    LogToFile(logFile, msg.str());
 }
 
-void LogToFile(std::ofstream &f, const std::string &msg) {
-    f << std::fixed << std::setprecision(3)
-      << Simulator::Now().GetSeconds() << "s: " << msg << "\n";
+/**
+ * ============================================================================
+ * ENERGY CSV LOGGING FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * Save current energy state of all nodes to CSV (called periodically)
+ */
+void LogEnergyToCsv(double currentTime, const EnergySourceContainer& sources,
+                     const std::vector<Vector>& positions) {
+    static std::ofstream energyCsv("energy_consumption.csv");
+    static bool headerWritten = false;
+    if (!headerWritten) {
+        energyCsv << "time_s,node_id,x_m,y_m,z_m,initial_energy_J,remaining_energy_J,consumed_energy_J,sf\n";
+        headerWritten = true;
+    }
+    for (uint32_t i = 0; i < sources.GetN(); ++i) {
+        Ptr<BasicEnergySource> src = DynamicCast<BasicEnergySource>(sources.Get(i));
+        if (src) {
+            double initialEnergy = src->GetInitialEnergy();
+            double remainingEnergy = src->GetRemainingEnergy();
+            energyCsv << std::fixed << std::setprecision(3)
+                      << currentTime << "," << i << ","
+                      << std::setprecision(4) << positions[i].x << "," << positions[i].y << "," << positions[i].z << ","
+                      << std::setprecision(3) << initialEnergy << "," << remainingEnergy << ","
+                      << (initialEnergy - remainingEnergy) << "," << unsigned(spreadingFactors[i]) << "\n";
+        }
+    }
+    energyCsv.flush();
 }
 
-/***************
- * Main simulation code 
- ***************/
+/**
+ * Energy trace callback - logs changes for individual nodes
+ */
+void EnergyTraceCallback(uint32_t nodeId, double oldEnergy, double newEnergy) {
+    if (nodeId < g_energyEventCount.size()) {
+        g_energyEventCount[nodeId]++;
+    }
+    double currentTime = Simulator::Now().GetSeconds();
+    std::stringstream msg;
+    msg << "Node " << nodeId << " energy: " << oldEnergy << "J -> " << newEnergy << "J at " << currentTime << "s";
+    LogToFile(logFile, msg.str());
+}
+
+/**
+ * ============================================================================
+ * MAIN SIMULATION FUNCTION
+ * ============================================================================
+ */
 int main(int argc, char *argv[]) {
-    LogComponentEnable("CT_dev", LOG_LEVEL_INFO);
-    NS_LOG_INFO("Starting CT_dev simulation with ENU coordinates...");
+    // Enable logging
+    LogComponentEnable("RSSIBridge", LOG_LEVEL_INFO);
+    NS_LOG_INFO("=== Starting LoRaWAN simulation with MATLAB bridge scenario coordinates and pathloss ===");
 
-    logFile.open("CT_dev_log.txt");
+    // Open simulation log
+    logFile.open("RSSIBridge_log.txt");
     if (!logFile.is_open()) {
-        NS_FATAL_ERROR("Cannot open log file");
+        NS_FATAL_ERROR("Cannot open enddevice_log.txt");
     }
 
     /**********************
-     * Channel Setup
+     * 1. LOAD NODE POSITIONS FROM CSV & SETUP POSITION ALLOCATOR
      **********************/
-    Ptr<LogDistancePropagationLossModel> loss = CreateObject<LogDistancePropagationLossModel>();
-    loss->SetPathLossExponent(3.9);
-    loss->SetReference(1.0, 32.4);
-    
+    std::string csvPath = "/user/edreckme/home/Downloads/Matlab/Bridge-Simulation-main/bridge_sensor_gateway_combined_100m.csv";
+    CommandLine cmd;
+    cmd.AddValue("csv", "Path to node position CSV", csvPath);
+    cmd.Parse(argc, argv);
+
+    std::vector<BridgeNodeRecord> records = LoadNodeRecordsFromCsv(csvPath);
+    // Find the gateway record to get its TxPower/AntennaGain for EIRP reconstruction.
+    const BridgeNodeRecord* gatewayRec = nullptr;
+    std::vector<Vector> sensorPositionsForLoss;
+    std::vector<double> sensorPathLossDb;
+
+    // First pass: find gateway
+    for (const auto &rec : records) {
+        if (rec.type == "Gateway") {
+            gatewayRec = &rec;
+
+            Vector gwPos(rec.x, rec.y, rec.z);
+            g_gatewayPositions.push_back(gwPos);
+
+            NS_LOG_INFO("Gateway found:"
+                        << " ID=" << rec.nodeId
+                        << " TxPower=" << rec.txPowerDbm << " dBm"
+                        << " AntennaGain=" << rec.antennaGainDbi << " dBi"
+                        << " Position=("
+                        << rec.x << ","
+                        << rec.y << ","
+                        << rec.z << ")");
+
+            break;
+        }
+    }
+
+    if (gatewayRec == nullptr) {
+        NS_FATAL_ERROR("No Gateway record found in CSV.");
+    }
+
+    // Second pass: load sensors and their MATLAB path loss
+    for (const auto &rec : records) {
+
+        Vector pos(rec.x, rec.y, rec.z);
+
+        if (rec.type == "Gateway") {
+            continue;
+        }
+
+        g_endDevicePositions.push_back(pos);
+
+        if (std::isnan(rec.rssiPredictedDbm)) {
+            NS_LOG_WARN("Node " << rec.nodeId
+                        << " has NaN RSSI_predicted_dBm -- "
+                        << "skipped in path-loss map.");
+            continue;
+        }
+
+        double eirpDbm =
+            gatewayRec->txPowerDbm +
+            gatewayRec->antennaGainDbi +
+            rec.antennaGainDbi;
+
+        double pathLossDb =
+            eirpDbm - rec.rssiPredictedDbm;
+
+        sensorPositionsForLoss.push_back(pos);
+        sensorPathLossDb.push_back(pathLossDb);
+
+        NS_LOG_INFO("RSSI CHECK | Node " << rec.nodeId
+                    << " | Pos=("
+                    << std::fixed << std::setprecision(4)
+                    << rec.x << ","
+                    << rec.y << ","
+                    << rec.z << ")"
+                    << " | RSSI_CSV="
+                    << std::setprecision(3)
+                    << rec.rssiPredictedDbm << " dBm"
+                    << " | EIRP="
+                    << eirpDbm << " dBm"
+                    << " | PathLoss="
+                    << pathLossDb << " dB"
+                    << " | ReconstructedRSSI="
+                    << (eirpDbm - pathLossDb) << " dBm");
+    }
+    N_END_DEVICES = g_endDevicePositions.size();
+    N_GATEWAYS = g_gatewayPositions.size();
+    if (N_END_DEVICES == 0 || N_GATEWAYS == 0) {
+        NS_FATAL_ERROR("CSV must contain at least one end device row and one Gateway row");
+    }
+    g_nsPosition = g_gatewayPositions.front(); // NS co-located with first gateway
+
+    distancesToGateways.resize(N_GATEWAYS);
+
+    /**********************
+     * CHANNEL SETUP — MATLAB path loss, chained with ns-3's own fading
+     **********************/
+    Ptr<MatlabLookupPropagationLossModel> loss = CreateObject<MatlabLookupPropagationLossModel>();
+    loss->LoadPathLossMap(sensorPositionsForLoss, sensorPathLossDb);
+
     Ptr<NakagamiPropagationLossModel> fading = CreateObject<NakagamiPropagationLossModel>();
     fading->SetAttribute("m0", DoubleValue(1.0));
     fading->SetAttribute("m1", DoubleValue(1.5));
     fading->SetAttribute("m2", DoubleValue(3.0));
     loss->SetNext(fading);
-    
+
     Ptr<PropagationDelayModel> delay = CreateObject<ConstantSpeedPropagationDelayModel>();
     Ptr<LoraChannel> channel = CreateObject<LoraChannel>(loss, delay);
-    NS_LOG_INFO("Channel setup complete.");
+    NS_LOG_INFO("✓ Channel setup complete (MATLAB path-loss lookup + Nakagami fading)");
+
+    NS_LOG_INFO("================================================");
+    NS_LOG_INFO("MATLAB PATH-LOSS LOOKUP VERIFICATION");
+    NS_LOG_INFO("Loaded " << sensorPathLossDb.size()
+                << " sensor path-loss entries");
+    NS_LOG_INFO("================================================");
+
+    // Print the first few entries for manual comparison with MATLAB
+    const size_t NUM_DEBUG_ENTRIES =
+        std::min(static_cast<size_t>(5), sensorPathLossDb.size());
+
+    for (size_t i = 0; i < NUM_DEBUG_ENTRIES; ++i) {
+        NS_LOG_INFO("MATLAB LOOKUP | Node index " << i
+                    << " | Pos=("
+                    << std::fixed << std::setprecision(4)
+                    << sensorPositionsForLoss[i].x << ","
+                    << sensorPositionsForLoss[i].y << ","
+                    << sensorPositionsForLoss[i].z << ")"
+                    << " | PathLoss="
+                    << std::setprecision(3)
+                    << sensorPathLossDb[i] << " dB");
+    }
+
+    NS_LOG_INFO("================================================");
 
     /**********************
-     * 1. SETUP POSITION ALLOCATOR with ENU coordinates
+     * Mobility
      **********************/
-    if (GATEWAY_POSITIONS.size() < N_GATEWAYS) {
-        NS_FATAL_ERROR("Not enough gateway positions defined for N_GATEWAYS");
-    }
-    if (ENU_DATA.size() < N_END_DEVICES) {
-        NS_FATAL_ERROR("Not enough ENU coordinates for N_END_DEVICES. Have " << ENU_DATA.size() << ", need " << N_END_DEVICES);
-    }
 
     MobilityHelper mobility;
     Ptr<ListPositionAllocator> allocator = CreateObject<ListPositionAllocator>();
 
-    // Place end devices using ENU coordinates
+    // Place end devices using CSV positions
     for (uint32_t i = 0; i < N_END_DEVICES; ++i) {
-        Vector pos(ENU_DATA[i][0], ENU_DATA[i][1], ENU_DATA[i][2]);
+        const Vector &pos = g_endDevicePositions[i];
         allocator->Add(pos);
-        NS_LOG_INFO("Placed end device " << i << " at ENU: x=" << std::fixed << std::setprecision(4)
+        NS_LOG_INFO("Placed end device " << i << " at x=" << std::fixed << std::setprecision(4)
                   << pos.x << ", y=" << pos.y << ", z=" << pos.z);
     }
-    
+
     // Place gateways
     for (uint32_t i = 0; i < N_GATEWAYS; i++) {
-        allocator->Add(GATEWAY_POSITIONS[i]);
-        NS_LOG_INFO("Placed gateway " << i << " at " << GATEWAY_POSITIONS[i]);
+        allocator->Add(g_gatewayPositions[i]);
+        NS_LOG_INFO("Placed gateway " << i << " at " << g_gatewayPositions[i]);
     }
-    
-    allocator->Add(NS_POSITION[0]);
-    NS_LOG_INFO("Placed network server at " << NS_POSITION[0]);
+
+    allocator->Add(g_nsPosition);
+    NS_LOG_INFO("Placed network server at " << g_nsPosition);
 
     mobility.SetPositionAllocator(allocator);
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
@@ -583,30 +747,29 @@ int main(int argc, char *argv[]) {
     NS_LOG_INFO("Mobility installed - positions assigned!");
 
     /**********************
-     * 4. NOW COMPUTE CORRECT DISTANCES
+     * 4. COMPUTE DISTANCES
      **********************/
-    NS_LOG_INFO("Computing CORRECT distances to gateway...");
+    NS_LOG_INFO("Computing distances to gateways...");
     for (uint32_t g = 0; g < N_GATEWAYS; ++g) {
         Ptr<MobilityModel> gwMob = gateways.Get(g)->GetObject<MobilityModel>();
         Vector gwPos = gwMob->GetPosition();
         distancesToGateways[g].resize(N_END_DEVICES);
-        
         for (uint32_t i = 0; i < N_END_DEVICES; ++i) {
             Ptr<MobilityModel> devMob = endDevices.Get(i)->GetObject<MobilityModel>();
             Vector devPos = devMob->GetPosition();
             distancesToGateways[g][i] = ns3::CalculateDistance(devPos, gwPos);
-            
-            // Verify ENU coordinates match
-            NS_LOG_INFO("Node " << i << " ENU(" << std::fixed << std::setprecision(2)
-                      << devPos.x << "," << devPos.y << "," << devPos.z 
-                      << ") → GW" << g << " distance: " 
+            NS_LOG_INFO("Node " << i << " (" << std::fixed << std::setprecision(2)
+                      << devPos.x << "," << devPos.y << "," << devPos.z
+                      << ") → GW" << g << " distance: "
                       << std::setprecision(1) << distancesToGateways[g][i] << "m");
         }
     }
-    NS_LOG_INFO("Distances to gateway computed CORRECTLY.");
+    NS_LOG_INFO("Distances to gateways computed.");
 
-    FindFurthestDevice(endDevices, gateways);
+    FindFurthestDevice(N_END_DEVICES, N_GATEWAYS);
     packetsReceivedPerNode.resize(endDevices.GetN(), 0);
+    g_retransmissionsPerNode.resize(endDevices.GetN(), 0); 
+    g_energyEventCount.resize(endDevices.GetN(), 0); 
 
     /**********************
      * Helpers Setup
@@ -656,7 +819,7 @@ int main(int argc, char *argv[]) {
         } else {
             mac->SetMType(LorawanMacHeader::UNCONFIRMED_DATA_UP);
         }
-        mac->TraceConnectWithoutContext("RequiredTransmissions", MakeCallback(&OnMacPacketOutcome));
+        mac->TraceConnectWithoutContext("RequiredTransmissions", MakeBoundCallback(&OnMacPacketOutcome, i));
         mac->TraceConnectWithoutContext("SentNewPacket", MakeBoundCallback(&OnEndDeviceSentNewPacket, i, mac));
     }
     NS_LOG_INFO("Devices setup complete.");
@@ -739,12 +902,29 @@ int main(int argc, char *argv[]) {
     DeviceEnergyModelContainer deviceModels = radioEnergyHelper.Install(endDevicesNet, sources);
     NS_LOG_INFO("Energy model installed.");
 
+    // Connect energy traces for detailed logging
+    for (uint32_t i = 0; i < sources.GetN(); ++i) {
+        Ptr<BasicEnergySource> src = DynamicCast<BasicEnergySource>(sources.Get(i));
+        if (src) {
+            src->TraceConnectWithoutContext("RemainingEnergy", 
+                            MakeBoundCallback(&EnergyTraceCallback, i));
+        }
+    }
+    NS_LOG_INFO("Energy traces connected.");
+
+
     /**********************
      * Spreading Factors - AUTOMATIC ns-3 ASSIGNMENT
      **********************/
     NS_LOG_INFO("Setting spreading factors automatically using ns-3 ADR...");
+    //loss->SetNext(nullptr);
+
     LorawanMacHelper::SetSpreadingFactorsUp(endDevices, gateways, channel);
-    
+
+    // Reattach fading so actual packet transmissions during Simulator::Run()
+    // still experience stochastic variation, exactly as before.
+    loss->SetNext(fading);
+        
     // Read ACTUAL assigned SFs
     spreadingFactors.resize(N_END_DEVICES, 7);
     for (uint32_t i = 0; i < N_END_DEVICES; ++i) {
@@ -753,17 +933,18 @@ int main(int argc, char *argv[]) {
         Ptr<EndDeviceLorawanMac> mac = DynamicCast<EndDeviceLorawanMac>(loraNetDevice->GetMac());
         
         uint8_t dr = mac->GetDataRate();
-        uint8_t sf = (dr <= 5) ? (12 - dr) : 7;
+        uint8_t sf = DataRateToSf(dr);
         spreadingFactors[i] = sf;
         
         double dist = distancesToGateways[0][i];
         NS_LOG_INFO("Node " << i << " AUTO-ASSIGNED SF" << unsigned(sf) << " (DR" << unsigned(dr) 
-                  << ") ENU(" << std::fixed << std::setprecision(2) << ENU_DATA[i][0] 
-                  << "," << ENU_DATA[i][1] << "," << ENU_DATA[i][2] << ") Dist:" 
-                  << std::setprecision(1) << dist << "m");
+          << ") pos(" << std::fixed << std::setprecision(2) << g_endDevicePositions[i].x 
+          << "," << g_endDevicePositions[i].y << "," << g_endDevicePositions[i].z << ") Dist:" 
+          << std::setprecision(1) << dist << "m");
+
     }
     
-    WriteSfAssignmentsToCsv(ENU_DATA);
+    WriteSfAssignmentsToCsv(g_endDevicePositions);
     NS_LOG_INFO("Automatic SF assignment complete.");
 
     /**********************
@@ -772,6 +953,7 @@ int main(int argc, char *argv[]) {
     for (uint32_t i = 0; i < endDevices.GetN(); ++i) {
         Ptr<LoraNetDevice> loraNetDevice = DynamicCast<LoraNetDevice>(endDevices.Get(i)->GetDevice(0));
         loraNetDevice->GetPhy()->TraceConnectWithoutContext("StartSending", MakeBoundCallback(&OnTransmissionCallback, i));
+        loraNetDevice->GetPhy()->TraceConnectWithoutContext("StartSending", MakeBoundCallback(&LogFurthestDevicePhyStartSending, i));
     }
     for (uint32_t i = 0; i < gateways.GetN(); ++i) {
         Ptr<LoraNetDevice> loraNetDevice = DynamicCast<LoraNetDevice>(gateways.Get(i)->GetDevice(0));
@@ -781,7 +963,7 @@ int main(int argc, char *argv[]) {
     /**********************
      * NetAnim Setup with SF coloring
      **********************/
-    AnimationInterface anim("CT_dev.xml");
+    AnimationInterface anim("RSSIBridge.xml");
     for (uint32_t i = 0; i < endDevices.GetN(); ++i) {
         std::string label = "ED" + std::to_string(i) + "_SF" + std::to_string(unsigned(spreadingFactors[i]));
         anim.UpdateNodeDescription(endDevices.Get(i), label);
@@ -805,28 +987,41 @@ int main(int argc, char *argv[]) {
     anim.UpdateNodeColor(networkServer, 0, 0, 255);
     anim.EnablePacketMetadata(true);
 
-    /**********************
-     * Schedule Duty Cycle Checks
-     **********************/
-    if (Simulator::Now() < Hours(SIM_END_HOURS) - Seconds(1)) {
-        Simulator::Schedule(Hours(1), &CheckGatewayDutyCycle);
-    }
-    if (Simulator::Now() < Hours(SIM_END_HOURS) - Seconds(1)) {
-        Simulator::Schedule(Hours(1), &CheckEndDeviceDutyCycle);
+    Time logInterval = Hours(1);
+    for (uint32_t hour = 1; hour <= SIM_END_HOURS; ++hour) {
+        Simulator::Schedule(Hours(hour), &LogEnergyToCsv, Hours(hour).GetSeconds(), sources, g_endDevicePositions);
     }
 
+    // 15. RUN SIMULATION
     Simulator::Stop(Hours(SIM_END_HOURS));
     Simulator::Run();
+
+    // 16. FINAL STATISTICS
+    NS_LOG_INFO("===============================================");
+
+    NS_LOG_INFO("=== SIMULATION COMPLETE ===");
+
+    NS_LOG_INFO("===============================================");
     
-    NS_LOG_INFO("Packets sent vs received per DR (SF7 -> SF12):");
+   NS_LOG_INFO("Packets sent vs received per DR (SF7 -> SF12):");
     for (int i = 0; i < 6; i++) {
         std::cout << "DR" << (5 - i) << " (SF" << (7 + i) << "): Sent = "
                   << packetsSent.at(i) << ", Received = " << packetsReceived.at(i) << std::endl;
     }
+    NS_LOG_INFO("===============================================");
     NS_LOG_INFO("Successful transmission to Gateway per end device:");
     for (uint32_t i = 0; i < packetsReceivedPerNode.size(); ++i) {
         std::cout << "Node " << i << " (SF" << unsigned(spreadingFactors[i]) << "): "
                   << packetsReceivedPerNode[i] << " packets received successfully by GW." << std::endl;
+    }
+    std::cout << "============== RETRANSMISSION SUMMARY ==============\n";
+    for (uint32_t i = 0; i < g_retransmissionsPerNode.size(); ++i) {
+        std::cout << "Node " << i << " (SF" << unsigned(spreadingFactors[i]) << "): "
+                << g_retransmissionsPerNode[i] << " retransmission(s)\n";
+    }
+    std::cout << "============== ENERGY EVENT COUNT ==============\n";
+    for (uint32_t i = 0; i < g_energyEventCount.size(); ++i) {
+        std::cout << "Node " << i << ": " << g_energyEventCount[i] << " energy state change(s)\n";
     }
     std::cout << "================= ACK SUMMARY =================\n";
     for (uint32_t g = 0; g < g_ackCount.size(); ++g) {
